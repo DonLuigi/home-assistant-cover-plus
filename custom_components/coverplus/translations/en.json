@@ -1,0 +1,18 @@
+{
+  "services": {
+    "set_position_and_tilt": {
+      "name": "Set position and tilt",
+      "description": "Set both the target cover position and target tilt for the virtual cover.",
+      "fields": {
+        "position": {
+          "name": "Position",
+          "description": "0\u2013100"
+        },
+        "tilt": {
+          "name": "Tilt",
+          "description": "0\u2013100"
+        }
+      }
+    }
+  }
+}

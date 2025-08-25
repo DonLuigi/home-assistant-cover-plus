@@ -1,0 +1,30 @@
+set_position_and_tilt:
+  name: Set position and tilt
+  description: Set both the target cover position and target tilt for the virtual cover.
+  target:
+    entity:
+      integration: coverplus
+      domain: cover
+  fields:
+    position:
+      name: Position
+      description: Target position (0–100).
+      required: false
+      example: 55
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+          unit_of_measurement: "%"
+    tilt:
+      name: Tilt
+      description: Target tilt (0–100).
+      required: false
+      example: 40
+      selector:
+        number:
+          min: 0
+          max: 100
+          mode: slider
+          unit_of_measurement: "%"
