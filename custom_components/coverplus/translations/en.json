@@ -1,4 +1,35 @@
 {
+  "title": "CoverPlus",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add CoverPlus virtual cover",
+        "description": "Create a virtual cover that adds tilt and richer behavior to a real cover.",
+        "data": {
+          "real_entity_id": "Real cover entity",
+          "name": "Name",
+          "open_time_sec": "Open time (seconds, 0\u2192100)",
+          "tilt_time_ms": "Tilt time (milliseconds, 0\u2192100)",
+          "trace_ticks": "Trace ticks (verbose logs)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "CoverPlus options",
+        "description": "Adjust timings and logging.",
+        "data": {
+          "real_entity_id": "Real cover entity",
+          "name": "Name",
+          "open_time_sec": "Open time (seconds, 0\u2192100)",
+          "tilt_time_ms": "Tilt time (milliseconds, 0\u2192100)",
+          "trace_ticks": "Trace ticks (verbose logs)"
+        }
+      }
+    }
+  },
   "services": {
     "set_position_and_tilt": {
       "name": "Set position and tilt",

@@ -1,7 +1,7 @@
 {
   "domain": "coverplus",
   "name": "CoverPlus \u2014 Virtual Cover Enhancements",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "documentation": "https://github.com/<your-username>/coverplus",
   "issue_tracker": "https://github.com/<your-username>/coverplus/issues",
   "requirements": [],
@@ -13,5 +13,6 @@
   "loggers": [
     "custom_components.coverplus"
   ],
-  "integration_type": "helper"
+  "integration_type": "helper",
+  "config_flow": true
 }

@@ -21,12 +21,11 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "coverplus"
 
-# ---- Config keys
 CONF_COVERS = "covers"
 CONF_REAL_ENTITY_ID = "real_entity_id"
 CONF_NAME = "name"
-CONF_OPEN_TIME_SEC = "open_time_sec"   # seconds for 0→100 position
-CONF_TILT_TIME_MS = "tilt_time_ms"     # ms for 0→100 tilt
+CONF_OPEN_TIME_SEC = "open_time_sec"
+CONF_TILT_TIME_MS = "tilt_time_ms"
 CONF_UNIQUE_ID = "unique_id"
 CONF_TRACE_TICKS = "trace_ticks"
 
@@ -42,24 +41,18 @@ SINGLE_COVER_SCHEMA = vol.Schema(
 )
 
 PLATFORM_SCHEMA = COVER_PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_COVERS): vol.All(cv.ensure_list, [SINGLE_COVER_SCHEMA]),
-    }
+    { vol.Required(CONF_COVERS): vol.All(cv.ensure_list, [SINGLE_COVER_SCHEMA]) }
 )
 
-# ---- Directions
 UP = "UP"
 DOWN = "DOWN"
 STOPPED = "STOPPED"
-
 EPS = 1e-6
 
-# One-time guards for service registration
 _ENTITY_SERVICE_REGISTERED = False
 _DOMAIN_SERVICE_REGISTERED = False
 
-# hass.data keys
-DATA_ENTITIES = "entities"  # map: entity_id -> TiltVirtualCover
+DATA_ENTITIES = "entities"
 
 
 async def async_setup_platform(
@@ -68,11 +61,12 @@ async def async_setup_platform(
     async_add_entities: AddEntitiesCallback,
     discovery_info: Optional[Dict[str, Any]] = None,
 ) -> None:
-    # Prepare hass.data bucket
+    source_conf = discovery_info or config
+    covers_conf = source_conf.get(CONF_COVERS, [])
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN].setdefault(DATA_ENTITIES, {})
 
-    covers_conf = config.get(CONF_COVERS, [])
     entities: List[TiltVirtualCover] = []
     for cfg in covers_conf:
         entities.append(
@@ -88,10 +82,13 @@ async def async_setup_platform(
         )
 
     async_add_entities(entities)
-    _LOGGER.info("[setup] Added %d CoverPlus virtual cover(s)", len(entities))
+    await _ensure_services(hass)
+    _LOGGER.info("[setup] Added %d CoverPlus virtual cover(s) (%s)", len(entities), "domain YAML" if discovery_info else "platform YAML")
 
-    # 1) Entity-level service under 'cover' domain
-    global _ENTITY_SERVICE_REGISTERED
+
+async def _ensure_services(hass: HomeAssistant) -> None:
+    global _ENTITY_SERVICE_REGISTERED, _DOMAIN_SERVICE_REGISTERED
+
     if not _ENTITY_SERVICE_REGISTERED:
         platform = async_get_current_platform()
         platform.async_register_entity_service(
@@ -105,8 +102,6 @@ async def async_setup_platform(
         _ENTITY_SERVICE_REGISTERED = True
         _LOGGER.debug("[setup] Registered entity service cover.set_position_and_tilt")
 
-    # 2) Domain-level service under 'coverplus' domain that routes to entity instances
-    global _DOMAIN_SERVICE_REGISTERED
     if not _DOMAIN_SERVICE_REGISTERED:
         SERVICE_SCHEMA = vol.Schema(
             {
@@ -122,10 +117,7 @@ async def async_setup_platform(
             tilt = call.data.get("tilt")
             registry: Dict[str, TiltVirtualCover] = hass.data[DOMAIN][DATA_ENTITIES]
 
-            _LOGGER.debug(
-                "[svc_domain] coverplus.set_position_and_tilt %s",
-                {"entity_ids": entity_ids, "position": position, "tilt": tilt},
-            )
+            _LOGGER.debug("[svc_domain] coverplus.set_position_and_tilt %s", {"entity_ids": entity_ids, "position": position, "tilt": tilt})
 
             tasks = []
             for eid in entity_ids:
@@ -138,16 +130,12 @@ async def async_setup_platform(
             if tasks:
                 await asyncio.gather(*tasks)
 
-        hass.services.async_register(
-            DOMAIN, "set_position_and_tilt", _handle_domain_set_position_and_tilt, schema=SERVICE_SCHEMA
-        )
+        hass.services.async_register(DOMAIN, "set_position_and_tilt", _handle_domain_set_position_and_tilt, schema=SERVICE_SCHEMA)
         _DOMAIN_SERVICE_REGISTERED = True
         _LOGGER.debug("[setup] Registered domain service coverplus.set_position_and_tilt")
 
 
 class TiltVirtualCover(CoverEntity, RestoreEntity):
-    """Virtual cover with pre-tilt → move → (optional) post-tilt pipeline."""
-
     _attr_should_poll = False
     _TICK_MS = 100
 
@@ -167,26 +155,21 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
         self._attr_unique_id = unique_id or f"{DOMAIN}:{real_entity_id}:{name}"
         self._trace_ticks = bool(trace_ticks)
 
-        # timing model
         self._open_time_millis = float(open_time_sec) * 1000.0
         self._tilt_time_millis = float(tilt_time_ms)
-        self._position_rate_per_ms = 100.0 / self._open_time_millis  # % per ms
-        self._tilt_rate_per_ms = 100.0 / self._tilt_time_millis      # % per ms
+        self._position_rate_per_ms = 100.0 / self._open_time_millis
+        self._tilt_rate_per_ms = 100.0 / self._tilt_time_millis
 
-        # internal state
         self.last_position: float = 0.0
         self.last_tilt: float = 0.0
         self.last_timestamp_millis: int = 0
         self.last_direction: str = STOPPED
 
-        # cached attrs for HA
         self._attr_current_cover_position = 0
         self._attr_current_cover_tilt_position = 0
 
-        # cancel flag
         self._cancel_requested = False
 
-        # features
         self._attr_supported_features = (
             CoverEntityFeature.OPEN
             | CoverEntityFeature.CLOSE
@@ -195,15 +178,9 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
             | CoverEntityFeature.SET_TILT_POSITION
         )
 
-        self._log(
-            "init",
-            open_time_ms=self._open_time_millis,
-            tilt_time_ms=self._tilt_time_millis,
-            position_rate_per_ms=round(self._position_rate_per_ms, 6),
-            tilt_rate_per_ms=round(self._tilt_rate_per_ms, 6),
-        )
+        self._log("init", open_time_ms=self._open_time_millis, tilt_time_ms=self._tilt_time_millis,
+                  position_rate_per_ms=round(self._position_rate_per_ms, 6), tilt_rate_per_ms=round(self._tilt_rate_per_ms, 6))
 
-    # ---- logging helpers
     def _snapshot(self) -> Dict[str, Any]:
         return {
             "last_position": round(self.last_position, 3),
@@ -218,7 +195,6 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
         base.update(payload)
         _LOGGER.debug("[%s] %s", tag, base)
 
-    # ---- HA props
     @property
     def is_closed(self) -> Optional[bool]:
         return int(round(self.last_position)) == 0
@@ -240,19 +216,16 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
             **self._snapshot(),
         }
 
-    # ---- state push
     def _push_state(self) -> None:
         self._attr_current_cover_position = int(round(self.last_position))
         self._attr_current_cover_tilt_position = int(round(self.last_tilt))
         self.async_write_ha_state()
 
-    # ---- restore & registry hook
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        # Register this instance for domain service routing
         self.hass.data.setdefault(DOMAIN, {})
-        self.hass.data[DOMAIN].setdefault(DATA_ENTITIES, {})
-        self.hass.data[DOMAIN][DATA_ENTITIES][self.entity_id] = self
+        self.hass.data[DOMAIN].setdefault("entities", {})
+        self.hass.data[DOMAIN]["entities"][self.entity_id] = self
 
         state = await self.async_get_last_state()
         if state is not None:
@@ -271,14 +244,12 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
         self._push_state()
 
     async def async_will_remove_from_hass(self) -> None:
-        # Unregister from domain routing
         try:
-            reg = self.hass.data.get(DOMAIN, {}).get(DATA_ENTITIES, {})
+            reg = self.hass.data.get(DOMAIN, {}).get("entities", {})
             reg.pop(self.entity_id, None)
         except Exception:
             pass
 
-    # ---- utils
     def _now_millis(self) -> int:
         return int(time.monotonic() * 1000)
 
@@ -287,48 +258,30 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
         self.last_position = max(0.0, min(100.0, self.last_position))
         self.last_tilt = max(0.0, min(100.0, self.last_tilt))
         if before_p != self.last_position or before_t != self.last_tilt:
-            self._log(
-                "clamp",
-                before_position=round(before_p, 3),
-                after_position=round(self.last_position, 3),
-                before_tilt=round(before_t, 3),
-                after_tilt=round(self.last_tilt, 3),
-            )
+            self._log("clamp",
+                      before_position=round(before_p, 3), after_position=round(self.last_position, 3),
+                      before_tilt=round(before_t, 3), after_tilt=round(self.last_tilt, 3))
 
     async def _svc(self, service: str) -> None:
-        """Fire-and-forget service call to the real cover (non-blocking)."""
         payload = {"entity_id": self._real}
         self._log("tx", service=service, payload=payload)
         try:
-            self.hass.async_create_task(
-                self.hass.services.async_call("cover", service, payload, blocking=False)
-            )
-            await asyncio.sleep(0)  # yield immediately
+            self.hass.async_create_task(self.hass.services.async_call("cover", service, payload, blocking=False))
+            await asyncio.sleep(0)
             self._log("tx_ok", service=service)
         except Exception as exc:
             self._log("tx_err", service=service, error=str(exc))
             self._cancel_requested = True
             self.last_direction = STOPPED
 
-    # ---- motor control
     async def _motor(self, direction: str) -> None:
-        """
-        Ensure the real motor matches the requested direction.
-        Sends a service call ONLY if the direction changed.
-        Safely handles reversals by issuing stop first.
-        """
         if direction == self.last_direction:
             self._log("motor_keep", keep_direction=direction)
             return
 
         self._log("motor_change", from_direction=self.last_direction, to_direction=direction)
 
-        # Stop first on reversals (UP↔DOWN)
-        if (
-            self.last_direction in (UP, DOWN)
-            and direction in (UP, DOWN)
-            and direction != self.last_direction
-        ):
+        if (self.last_direction in (UP, DOWN) and direction in (UP, DOWN) and direction != self.last_direction):
             await self._svc("stop_cover")
             await asyncio.sleep(0)
 
@@ -345,7 +298,6 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
         self.last_direction = direction
         self._log("motor_set", now_direction=self.last_direction)
 
-    # ---- tilt phase (no direction changes; only stops on cancel)
     async def _act_tilt(self, target_tilt: float) -> None:
         target_tilt = float(max(0.0, min(100.0, target_tilt)))
         self._log("act_tilt_begin", target_tilt=target_tilt)
@@ -372,20 +324,15 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
             self._clamp()
 
             if self._trace_ticks:
-                self._log(
-                    "act_tilt_tick",
-                    slice_millis=slice_millis,
-                    before_tilt=round(before_tilt, 3),
-                    after_tilt=round(self.last_tilt, 3),
-                    target_tilt=target_tilt,
-                    remaining_ms=max(0, millis_to_boundary - slice_millis),
-                )
+                self._log("act_tilt_tick",
+                          slice_millis=slice_millis, before_tilt=round(before_tilt, 3),
+                          after_tilt=round(self.last_tilt, 3), target_tilt=target_tilt,
+                          remaining_ms=max(0, millis_to_boundary - slice_millis))
             self._push_state()
             await asyncio.sleep(slice_millis / 1000.0)
 
         self._log("act_tilt_end", final_tilt=round(self.last_tilt, 3))
 
-    # ---- position phase (no direction changes; only stops on cancel)
     async def _act_position(self, target_position: float, target_direction: str) -> None:
         target_position = float(max(0.0, min(100.0, target_position)))
         self._log("act_pos_begin", target_position=target_position, target_direction=target_direction)
@@ -412,21 +359,15 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
             self._clamp()
 
             if self._trace_ticks:
-                self._log(
-                    "act_pos_tick",
-                    slice_millis=slice_millis,
-                    before_position=round(before_position, 3),
-                    after_position=round(self.last_position, 3),
-                    target_position=target_position,
-                    direction=target_direction,
-                    remaining_ms=max(0, millis_to_boundary - slice_millis),
-                )
+                self._log("act_pos_tick",
+                          slice_millis=slice_millis, before_position=round(before_position, 3),
+                          after_position=round(self.last_position, 3), target_position=target_position,
+                          direction=target_direction, remaining_ms=max(0, millis_to_boundary - slice_millis))
             self._push_state()
             await asyncio.sleep(slice_millis / 1000.0)
 
         self._log("act_pos_end", final_position=round(self.last_position, 3))
 
-    # ---- orchestrator
     async def _act(self, target_position: float, target_tilt: Optional[float]) -> None:
         self._cancel_requested = False
 
@@ -436,7 +377,6 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
 
         self._log("act_begin", target_position=target_position, target_tilt=target_tilt)
 
-        # Tilt-only fast path
         if abs(target_position - self.last_position) < EPS:
             if target_tilt is None or abs(target_tilt - self.last_tilt) < EPS:
                 await self._motor(STOPPED)
@@ -456,7 +396,6 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
             self._push_state()
             return
 
-        # Normal sequence
         target_direction = UP if target_position > self.last_position else DOWN
         self._log("act_path", mode="move_sequence", move_dir=target_direction)
 
@@ -475,7 +414,6 @@ class TiltVirtualCover(CoverEntity, RestoreEntity):
         self._log("act_done", final_position=round(self.last_position, 3), final_tilt=round(self.last_tilt, 3))
         self._push_state()
 
-    # ---- Commands → targets mapping
     async def async_open_cover(self, **kwargs: Any) -> None:
         self._log("cmd_open_cover")
         await self._act(target_position=100.0, target_tilt=100.0)
